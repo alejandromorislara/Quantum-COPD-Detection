@@ -1,0 +1,8 @@
+*.venv
+*venv
+*.pyc
+*audio_and_txt_files
+*.csv
+*.wav
+*.audio_and_txt_files
+*/requirements.txt
