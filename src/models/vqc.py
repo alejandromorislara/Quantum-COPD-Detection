@@ -64,6 +64,8 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
                  class_weight: dict = None,
                  monitor_gradients: bool = True,
                  gradient_threshold: float = 1e-5,
+                 early_stopping_patience: int = None,
+                 validation_split: float = 0.0,
                  random_state: int = RANDOM_STATE):
         """
         Initialize the VQC.
@@ -76,6 +78,8 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
             class_weight: Dict {0: weight_0, 1: weight_1} for imbalanced data
             monitor_gradients: Whether to monitor gradient norms for barren plateaus
             gradient_threshold: Threshold below which gradients are considered vanishing
+            early_stopping_patience: Number of epochs without improvement before stopping (None = disabled)
+            validation_split: Fraction of training data to use for validation (0.0 = disabled)
             random_state: Random seed
         """
         super().__init__(name="Variational Quantum Classifier")
@@ -87,6 +91,8 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
         self.class_weight = class_weight
         self.monitor_gradients = monitor_gradients
         self.gradient_threshold = gradient_threshold
+        self.early_stopping_patience = early_stopping_patience
+        self.validation_split = validation_split
         self.random_state = random_state
         
         # Initialize weights
@@ -107,6 +113,12 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
         self.gradient_history: List[float] = []
         self.barren_plateau_detected: bool = False
         self.barren_plateau_epoch: Optional[int] = None
+        
+        # Early stopping tracking
+        self.best_val_loss: float = float('inf')
+        self.best_weights: Optional[np.ndarray] = None
+        self.stopped_epoch: Optional[int] = None
+        self.validation_history: List[float] = []
         
     def _create_circuit(self):
         """Create the VQC circuit."""
@@ -253,7 +265,7 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
             batch_size: Optional[int] = None,
             verbose: bool = True) -> 'VariationalQuantumClassifier':
         """
-        Train the VQC with optional gradient monitoring.
+        Train the VQC with optional gradient monitoring and early stopping.
         
         Args:
             X: Training features
@@ -270,22 +282,44 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
         if X.shape[1] != self.n_qubits:
             raise ValueError(f"Expected {self.n_qubits} features, got {X.shape[1]}")
         
+        # Split data for validation if early stopping is enabled
+        X_train, y_train = X, y
+        X_val, y_val = None, None
+        
+        if self.validation_split > 0 and self.early_stopping_patience is not None:
+            from sklearn.model_selection import train_test_split
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y, 
+                test_size=self.validation_split, 
+                stratify=y, 
+                random_state=self.random_state
+            )
+            if verbose:
+                print(f"Using {len(X_train)} samples for training, {len(X_val)} for validation")
+        
         self.training_history = []
+        self.validation_history = []
         self.gradient_history = []
         self.barren_plateau_detected = False
         self.barren_plateau_epoch = None
+        self.stopped_epoch = None
+        
+        # Early stopping state
+        self.best_val_loss = float('inf')
+        self.best_weights = np.array(self.weights).copy()
+        patience_counter = 0
         
         iterator = range(self.epochs)
         if verbose:
             iterator = tqdm(iterator, desc="Training VQC")
         
         for epoch in iterator:
-            if batch_size is not None and batch_size < len(X):
+            if batch_size is not None and batch_size < len(X_train):
                 # Mini-batch training
-                indices = np.random.choice(len(X), batch_size, replace=False)
-                X_batch, y_batch = X[indices], y[indices]
+                indices = np.random.choice(len(X_train), batch_size, replace=False)
+                X_batch, y_batch = X_train[indices], y_train[indices]
             else:
-                X_batch, y_batch = X, y
+                X_batch, y_batch = X_train, y_train
             
             # Update weights
             self.weights = self.optimizer.step(
@@ -293,9 +327,31 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
                 self.weights
             )
             
-            # Compute full cost for logging
-            cost = float(self._cost(self.weights, X, y))
+            # Compute training cost for logging
+            cost = float(self._cost(self.weights, X_train, y_train))
             self.training_history.append(cost)
+            
+            # Compute validation cost if validation data is available
+            val_loss = None
+            if X_val is not None:
+                val_loss = float(self._cost(self.weights, X_val, y_val))
+                self.validation_history.append(val_loss)
+                
+                # Early stopping check
+                if self.early_stopping_patience is not None:
+                    if val_loss < self.best_val_loss:
+                        self.best_val_loss = val_loss
+                        self.best_weights = np.array(self.weights).copy()
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
+                        
+                        if patience_counter >= self.early_stopping_patience:
+                            self.stopped_epoch = epoch
+                            if verbose:
+                                print(f"\n🛑 Early stopping triggered at epoch {epoch}. "
+                                      f"Best val_loss: {self.best_val_loss:.4f}")
+                            break
             
             # Monitor gradients if enabled
             if self.monitor_gradients and (epoch % 5 == 0 or epoch == self.epochs - 1):
@@ -317,16 +373,26 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
             
             if verbose and (epoch + 1) % 10 == 0:
                 postfix = {"loss": f"{cost:.4f}"}
+                if val_loss is not None:
+                    postfix["val_loss"] = f"{val_loss:.4f}"
                 if self.monitor_gradients and self.gradient_history:
                     postfix["grad"] = f"{self.gradient_history[-1]:.2e}"
                 iterator.set_postfix(postfix)
+        
+        # Restore best weights if early stopping was used
+        if self.early_stopping_patience is not None and X_val is not None:
+            self.weights = pnp.array(self.best_weights, requires_grad=True)
+            if verbose:
+                print(f"Restored best weights from epoch with val_loss: {self.best_val_loss:.4f}")
         
         self.training_time = time.time() - start_time
         self._is_fitted = True
         
         if verbose:
             print(f"VQC trained in {self.training_time:.2f} seconds")
-            print(f"Final loss: {self.training_history[-1]:.4f}")
+            print(f"Final training loss: {self.training_history[-1]:.4f}")
+            if self.validation_history:
+                print(f"Best validation loss: {self.best_val_loss:.4f}")
             
             if self.monitor_gradients:
                 stats = self.get_gradient_statistics()
@@ -390,12 +456,18 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
             "class_weight": self.class_weight,
             "monitor_gradients": self.monitor_gradients,
             "gradient_threshold": self.gradient_threshold,
+            "early_stopping_patience": self.early_stopping_patience,
+            "validation_split": self.validation_split,
             "random_state": self.random_state
         }
     
     def get_training_history(self) -> List[float]:
         """Get training loss history."""
         return self.training_history
+    
+    def get_validation_history(self) -> List[float]:
+        """Get validation loss history."""
+        return self.validation_history
     
     def save(self, path: Path) -> None:
         """Save model to disk."""
@@ -407,9 +479,12 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
                 "weights": np.array(self.weights),
                 "params": self.get_params(),
                 "training_history": self.training_history,
+                "validation_history": self.validation_history,
                 "gradient_history": self.gradient_history,
                 "barren_plateau_detected": self.barren_plateau_detected,
                 "barren_plateau_epoch": self.barren_plateau_epoch,
+                "best_val_loss": self.best_val_loss,
+                "stopped_epoch": self.stopped_epoch,
                 "training_time": self.training_time
             }, f)
         
@@ -429,13 +504,18 @@ class VariationalQuantumClassifier(BaseQuantumClassifier):
             class_weight=data["params"].get("class_weight"),
             monitor_gradients=data["params"].get("monitor_gradients", True),
             gradient_threshold=data["params"].get("gradient_threshold", 1e-5),
+            early_stopping_patience=data["params"].get("early_stopping_patience"),
+            validation_split=data["params"].get("validation_split", 0.0),
             random_state=data["params"]["random_state"]
         )
         classifier.weights = pnp.array(data["weights"], requires_grad=True)
         classifier.training_history = data["training_history"]
+        classifier.validation_history = data.get("validation_history", [])
         classifier.gradient_history = data.get("gradient_history", [])
         classifier.barren_plateau_detected = data.get("barren_plateau_detected", False)
         classifier.barren_plateau_epoch = data.get("barren_plateau_epoch", None)
+        classifier.best_val_loss = data.get("best_val_loss", float('inf'))
+        classifier.stopped_epoch = data.get("stopped_epoch", None)
         classifier.training_time = data["training_time"]
         classifier._is_fitted = True
         

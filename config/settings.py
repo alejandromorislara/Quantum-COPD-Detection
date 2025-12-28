@@ -1,5 +1,5 @@
 """
-Global settings and constants for the Quantum Respiratory Classification project.
+Global settings and constants for the project.
 """
 
 # Audio processing settings
