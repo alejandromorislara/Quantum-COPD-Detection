@@ -152,17 +152,22 @@ class HybridQuantumClassifier(BaseQuantumClassifier):
             
             def forward(self, x):
                 batch_size = x.shape[0]
+                device = x.device
                 outputs = []
                 
+                # Move weights to CPU for PennyLane (which runs on CPU)
+                weights_cpu = self.weights.cpu()
+                
                 for i in range(batch_size):
-                    # Scale inputs to [-pi, pi]
-                    inputs = torch.tanh(x[i]) * np.pi
+                    # Move input to CPU and scale to [-pi, pi]
+                    inputs_cpu = torch.tanh(x[i].cpu()) * np.pi
                     
-                    # Run quantum circuit
-                    q_out = quantum_circuit(inputs, self.weights)
+                    # Run quantum circuit (everything on CPU)
+                    q_out = quantum_circuit(inputs_cpu, weights_cpu)
                     outputs.append(torch.stack(q_out))
                 
-                return torch.stack(outputs)
+                # Stack, convert to float32, and move back to original device
+                return torch.stack(outputs).float().to(device)
         
         class HybridNet(nn.Module):
             """
