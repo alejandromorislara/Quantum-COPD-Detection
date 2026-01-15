@@ -68,7 +68,7 @@ Se utiliza el **ICBHI 2017 Respiratory Sound Database**, disponible en [Kaggle](
 | Característica | Valor |
 |---------------|-------|
 | Total de archivos de audio | 920 |
-| Número de pacientes | 126 (90 utilizados) |
+| Número de pacientes | 126  |
 | Diagnósticos | Healthy, COPD |
 | Muestras totales | 6,068 ciclos respiratorios |
 | Frecuencia de muestreo | 4000-44100 Hz |
@@ -113,7 +113,7 @@ Se emplea **SMOTE** (Synthetic Minority Over-sampling Technique) para balancear 
 
 ### 5.1 Baseline Clásico: SVM
 
-Support Vector Machine con kernel RBF optimizado mediante GridSearchCV.
+Support Vector Machine con kernel RBF.
 
 ### 5.2 Quantum Support Vector Machine (QSVM)
 
