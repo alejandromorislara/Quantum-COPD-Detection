@@ -70,7 +70,6 @@ Se utiliza el **ICBHI 2017 Respiratory Sound Database**, disponible en [Kaggle](
 | Número de pacientes | 90  |
 | Diagnósticos | Healthy, COPD |
 | Muestras totales | 6k ciclos respiratorios |
-| Frecuencia de muestreo | 4000-44100 Hz |
 
 ### Análisis Exploratorio
 
